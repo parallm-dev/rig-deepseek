@@ -1,5 +1,20 @@
 .env
 target/
 .DS_Store
+
+# IDE and editor files
 .idea/
 .vscode/
+.zed/
+.windsurf/
+.cursor/
+*.iml
+*.swp
+*.swo
+*~
+
+# Tool specific files
+.aider*
+.parallm/
+.parallm/**/*
+CONVENTIONS.md
