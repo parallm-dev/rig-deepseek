@@ -2,7 +2,7 @@ use crate::completion::{
     CompletionError, CompletionModel as CompletionModelTrait, CompletionRequest,
     CompletionResponse as RigCompletionResponse, ModelChoice,
 };
-use crate::providers::deepseek::client::Client;
+use super::client::Client;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
