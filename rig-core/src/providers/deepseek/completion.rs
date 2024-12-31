@@ -12,12 +12,12 @@ pub const DEEPSEEK_API_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEEPSEEK_CHAT: &str = "deepseek-chat";
 pub const DEEPSEEK_CODER: &str = "deepseek-coder";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct CompletionResponse {
     pub id: String,
     pub model: String,
     pub choices: Vec<ChoiceObject>,
-    // Optionally include usage metrics if available
+    // Possibly usage, error codes, etc.
     // pub usage: Option<Usage>,
 }
 
@@ -42,7 +42,7 @@ pub struct ToolUse {
     pub arguments: Value,
 }
 
-#[allow(dead_code)]
+/// If you want to parse usage data
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Usage {
     pub prompt_tokens: i64,
@@ -59,37 +59,34 @@ impl TryFrom<CompletionResponse> for RigCompletionResponse<CompletionResponse> {
             .get(0)
             .ok_or_else(|| CompletionError::ResponseError("No choices found".to_owned()))?;
 
-        // Check for tool calls
+        // If there's a tool call
         if let Some(tool_calls) = &first_choice.message.tool_calls {
             if let Some(tool_call) = tool_calls.get(0) {
                 return Ok(RigCompletionResponse {
-                    choice: ModelChoice::ToolCall(
-                        tool_call.name.clone(),
-                        tool_call.arguments.clone(),
-                    ),
+                    choice: ModelChoice::ToolCall(tool_call.name.clone(), tool_call.arguments.clone()),
                     raw_response: resp,
                 });
             }
         }
 
-        // Check for message content
+        // Otherwise, check content
         if let Some(text) = &first_choice.message.content {
-            return Ok(RigCompletionResponse {
+            Ok(RigCompletionResponse {
                 choice: ModelChoice::Message(text.clone()),
                 raw_response: resp,
-            });
+            })
+        } else {
+            Err(CompletionError::ResponseError(
+                "No content or tool call in response".to_owned(),
+            ))
         }
-
-        Err(CompletionError::ResponseError(
-            "No content or tool call in response".to_owned(),
-        ))
     }
 }
 
 #[derive(Clone)]
 pub struct CompletionModel {
     client: Client,
-    model: String,
+    pub model: String,
 }
 
 impl CompletionModel {
@@ -102,14 +99,14 @@ impl CompletionModel {
 }
 
 #[async_trait]
-impl CompletionModelTrait for CompletionModel {
+impl crate::completion::CompletionModel for CompletionModel {
     type Response = CompletionResponse;
 
     async fn completion(
         &self,
         request: CompletionRequest,
     ) -> Result<RigCompletionResponse<Self::Response>, CompletionError> {
-        // Build JSON body using data from CompletionRequest
+        // 1) Build JSON body using data from `CompletionRequest`
         let messages = request
             .chat_history
             .into_iter()
@@ -133,7 +130,7 @@ impl CompletionModelTrait for CompletionModel {
         }
 
         if !request.tools.is_empty() {
-            // Include tools for function calling
+            // Tools => function calling
             let ds_tools: Vec<_> = request.tools.into_iter().map(|tool| {
                 json!({
                     "type": "function",
@@ -151,7 +148,7 @@ impl CompletionModelTrait for CompletionModel {
             crate::json_utils::merge_inplace(&mut body, params.clone());
         }
 
-        // Make the API call
+        // 2) Make the API call
         let resp = self
             .client
             .post("/chat/completions")
@@ -160,7 +157,7 @@ impl CompletionModelTrait for CompletionModel {
             .await
             .map_err(|e| CompletionError::ProviderError(e.to_string()))?;
 
-        // Handle the response
+        // 3) Handle success vs. error
         if resp.status().is_success() {
             let ds_resp = resp
                 .json::<ApiResponse<CompletionResponse>>()
@@ -168,20 +165,20 @@ impl CompletionModelTrait for CompletionModel {
                 .map_err(|e| CompletionError::ResponseError(e.to_string()))?;
 
             match ds_resp {
-                ApiResponse::Success(data) => data.try_into(), // Uses the TryFrom implementation
-                ApiResponse::Error(error) => Err(CompletionError::ProviderError(error.message)),
+                ApiResponse::Message(ok) => ok.try_into(), // uses TryFrom
+                ApiResponse::Error(e) => Err(CompletionError::ProviderError(e.message)),
             }
         } else {
-            let error_text = resp.text().await.unwrap_or_default();
-            Err(CompletionError::ProviderError(error_text))
+            Err(CompletionError::ProviderError(resp.text().await.unwrap_or_default()))
         }
     }
 }
 
+/// Like Anthropic’s `ApiResponse<T>`.
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ApiResponse<T> {
-    Success(T),
+    Message(T),
     Error(ApiErrorResponse),
 }
 
